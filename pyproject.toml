@@ -1,0 +1,18 @@
+[project]
+name = "wsl-agent-cdp"
+version = "0.1.0"
+description = "Bridge Chrome DevTools from a Windows browser into WSL2"
+readme = "README.md"
+authors = [
+    { name = "Bom Mongkon", email = "bomm.mongkon@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = []
+
+[project.scripts]
+wsl-agent-cdp = "wsl_agent_cdp:main"
+cdp-bridge = "wsl_agent_cdp:main"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"

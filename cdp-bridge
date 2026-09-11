@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+RELAY="$ROOT_DIR/scripts/cdp_relay.py"
+WINDOWS_HELPER="$ROOT_DIR/scripts/windows-bridge.ps1"
+
+BROWSER_PORT=${CDP_BROWSER_PORT:-9222}
+LOCAL_PORT=${CDP_LOCAL_PORT:-9223}
+BRIDGE_PORT=${CDP_BRIDGE_PORT:-9224}
+STATE_DIR=${XDG_RUNTIME_DIR:-/tmp}/wsl-cdp-bridge-${UID}
+PID_FILE=$STATE_DIR/relay.pid
+HOST_FILE=$STATE_DIR/windows-host
+LOG_FILE=$STATE_DIR/relay.log
+
+usage() {
+  cat <<'EOF'
+Usage: ./cdp-bridge <command> [browser]
+
+Commands:
+  up [brave|chrome|edge]  Configure the bridge, start the relay, and optionally
+                          launch a dedicated Windows browser profile.
+  browser [name]          Launch the browser (default: brave) with CDP enabled.
+  status                  Check every hop and print the browser version.
+  doctor                  Check dependencies and warn about shared CDP access.
+  config                  Print MCP client configuration examples.
+  down                    Stop the relay and remove this tool's Windows rules.
+  help                    Show this help.
+
+Environment overrides: CDP_BROWSER_PORT, CDP_LOCAL_PORT, CDP_BRIDGE_PORT.
+EOF
+}
+
+die() {
+  printf 'cdp-bridge: %s\n' "$*" >&2
+  exit 1
+}
+
+require_wsl() {
+  command -v powershell.exe >/dev/null 2>&1 ||
+    die "powershell.exe was not found; run this command inside WSL."
+}
+
+validate_port() {
+  local name=$1 value=$2
+  [[ $value =~ ^[0-9]+$ ]] && ((value >= 1 && value <= 65535)) ||
+    die "$name must be an integer from 1 to 65535 (got '$value')."
+}
+
+validate_ports() {
+  validate_port CDP_BROWSER_PORT "$BROWSER_PORT"
+  validate_port CDP_LOCAL_PORT "$LOCAL_PORT"
+  validate_port CDP_BRIDGE_PORT "$BRIDGE_PORT"
+  [[ $BROWSER_PORT != "$LOCAL_PORT" && $BROWSER_PORT != "$BRIDGE_PORT" && $LOCAL_PORT != "$BRIDGE_PORT" ]] ||
+    die "browser, local, and bridge ports must be different."
+}
+
+windows_host_ip() {
+  local candidate=''
+
+  if command -v ip >/dev/null 2>&1; then
+    candidate=$(ip -4 route show default 2>/dev/null | awk 'NR == 1 {print $3}' || true)
+  fi
+  if [[ -z $candidate ]] && command -v route >/dev/null 2>&1; then
+    candidate=$(route -n 2>/dev/null | awk '$1 == "0.0.0.0" {print $2; exit}' || true)
+  fi
+  if [[ -z $candidate ]]; then
+    candidate=$(awk '/^nameserver[[:space:]]+[0-9]+\./ {print $2; exit}' /etc/resolv.conf 2>/dev/null || true)
+  fi
+
+  [[ $candidate =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] ||
+    die "could not determine the Windows host IP from WSL's default route."
+  printf '%s\n' "$candidate"
+}
+
+wsl_ip() {
+  local candidate=''
+  if command -v ip >/dev/null 2>&1; then
+    candidate=$(ip -4 route get "$(windows_host_ip)" 2>/dev/null |
+      awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}' || true)
+  fi
+  if [[ -z $candidate ]]; then
+    candidate=$(hostname -I 2>/dev/null | awk '{print $1}')
+  fi
+  [[ $candidate =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] ||
+    die "could not determine the WSL IPv4 address."
+  printf '%s\n' "$candidate"
+}
+
+windows_path() {
+  if command -v wslpath >/dev/null 2>&1; then
+    wslpath -w "$WINDOWS_HELPER"
+  else
+    die "wslpath was not found; this does not look like WSL."
+  fi
+}
+
+run_windows_helper() {
+  local action=$1
+  shift
+  require_wsl
+  powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+    -File "$(windows_path)" -Action "$action" "$@" </dev/null
+}
+
+installed_distros() {
+  command -v wsl.exe >/dev/null 2>&1 || return 1
+  # Windows 10 releases may emit UTF-16LE here. Decode both that and modern
+  # UTF-8 output without ever storing NUL bytes in a Bash variable.
+  wsl.exe --list --quiet 2>/dev/null | python3 -c '
+import sys
+data = sys.stdin.buffer.read()
+text = data.decode("utf-16le" if b"\0" in data else "utf-8", errors="replace")
+for line in text.replace("\ufeff", "").splitlines():
+    if line.strip():
+        print(line.strip())
+'
+}
+
+security_notice() {
+  local current=${WSL_DISTRO_NAME:-unknown} distro
+  local -a distros=() others=()
+  mapfile -t distros < <(installed_distros || true)
+  for distro in "${distros[@]}"; do
+    [[ $distro == "$current" ]] || others+=("$distro")
+  done
+
+  printf '\nSECURITY: CDP on 127.0.0.1:%s has no authentication.\n' "$LOCAL_PORT" >&2
+  printf 'Processes that can reach the shared WSL2 loopback namespace can fully control this browser profile and read its cookies.\n' >&2
+  if ((${#distros[@]} == 0)); then
+    printf 'WARNING: Installed WSL distributions could not be enumerated; assume other distributions may have access.\n' >&2
+    printf 'Do not sign this agent profile into sensitive accounts while untrusted code runs in another distro or a reachable container.\n\n' >&2
+  elif ((${#others[@]})); then
+    printf 'WARNING: Other WSL distributions are installed: %s\n' "$(IFS=', '; printf '%s' "${others[*]}")" >&2
+    printf 'Do not sign this agent profile into sensitive accounts while untrusted code runs in another distro or a reachable container.\n\n' >&2
+  else
+    printf 'No other installed WSL distributions were detected. Reachable containers and processes in this distro still share the risk.\n\n' >&2
+  fi
+}
+
+doctor() {
+  local failures=0 host='unknown'
+  printf 'WSL CDP bridge doctor\n'
+  if [[ -n ${WSL_DISTRO_NAME:-} ]]; then
+    printf 'WSL distro  : %s\n' "$WSL_DISTRO_NAME"
+  else
+    printf 'WSL distro  : not detected\n'
+    failures=$((failures + 1))
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    printf 'Python 3    : found\n'
+  else
+    printf 'Python 3    : MISSING\n'
+    failures=$((failures + 1))
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    printf 'curl        : found\n'
+  else
+    printf 'curl        : MISSING\n'
+    failures=$((failures + 1))
+  fi
+  if command -v powershell.exe >/dev/null 2>&1 && command -v wsl.exe >/dev/null 2>&1; then
+    printf 'Windows CLI : found\n'
+  else
+    printf 'Windows CLI : MISSING\n'
+    failures=$((failures + 1))
+  fi
+  host=$(windows_host_ip 2>/dev/null || true)
+  printf 'Windows host: %s\n' "${host:-not detected}"
+  [[ -n $host ]] || failures=$((failures + 1))
+
+  security_notice
+  if ((failures)); then
+    printf 'Doctor found %s blocking problem(s).\n' "$failures" >&2
+    return 1
+  fi
+  printf 'Base requirements look ready. Run ./cdp-bridge status to test an active bridge.\n'
+}
+
+relay_running() {
+  local pid
+  [[ -r $PID_FILE ]] || return 1
+  read -r pid <"$PID_FILE"
+  [[ $pid =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -Fq "$RELAY"
+}
+
+stop_relay() {
+  local pid=''
+  if relay_running; then
+    read -r pid <"$PID_FILE"
+    kill "$pid"
+    for _ in {1..20}; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.05
+    done
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  rm -f -- "$PID_FILE" "$HOST_FILE"
+}
+
+start_relay() {
+  local host=$1 pid
+  mkdir -p -- "$STATE_DIR"
+  chmod 700 "$STATE_DIR"
+
+  # An `up` always refreshes the process so a changed WSL gateway cannot linger.
+  stop_relay
+  nohup python3 "$RELAY" \
+    --listen-host 127.0.0.1 --listen-port "$LOCAL_PORT" \
+    --target-host "$host" --target-port "$BRIDGE_PORT" \
+    >>"$LOG_FILE" 2>&1 </dev/null &
+  pid=$!
+  printf '%s\n' "$pid" >"$PID_FILE"
+  printf '%s\n' "$host" >"$HOST_FILE"
+
+  for _ in {1..30}; do
+    relay_running || {
+      tail -n 20 "$LOG_FILE" >&2 || true
+      die "the local relay exited during startup."
+    }
+    if python3 - "$LOCAL_PORT" <<'PY' >/dev/null 2>&1
+import socket, sys
+with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=.2):
+    pass
+PY
+    then
+      return
+    fi
+    sleep 0.1
+  done
+  stop_relay
+  die "the local relay did not listen on 127.0.0.1:$LOCAL_PORT."
+}
+
+setup_windows_bridge() {
+  local host=$1 guest
+  guest=$(wsl_ip)
+  printf 'Configuring Windows %s:%s -> 127.0.0.1:%s (UAC may appear)...\n' \
+    "$host" "$BRIDGE_PORT" "$BROWSER_PORT"
+  run_windows_helper Setup \
+    -ListenAddress "$host" -BridgePort "$BRIDGE_PORT" \
+    -BrowserPort "$BROWSER_PORT" -WslAddress "$guest"
+}
+
+launch_browser() {
+  local browser=${1:-brave}
+  case $browser in
+    brave|chrome|edge) ;;
+    *) die "unknown browser '$browser' (choose brave, chrome, or edge)." ;;
+  esac
+  security_notice
+  run_windows_helper Browser -Browser "$browser" \
+    -BrowserPort "$BROWSER_PORT" -ClientPort "$LOCAL_PORT"
+}
+
+wait_for_cdp() {
+  local url="http://127.0.0.1:$LOCAL_PORT/json/version"
+  for _ in {1..50}; do
+    if curl --silent --show-error --fail --max-time 1 "$url" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 0.2
+  done
+  printf 'Bridge is running, but CDP is not answering yet.\n' >&2
+  printf 'Start the browser with: ./cdp-bridge browser brave\n' >&2
+  printf 'Then diagnose with:  ./cdp-bridge status\n' >&2
+  return 1
+}
+
+status() {
+  local host='unknown' local_state='down' bridge_state='unreachable' cdp_state='unreachable'
+  [[ -r $HOST_FILE ]] && read -r host <"$HOST_FILE"
+  relay_running && local_state="listening (pid $(<"$PID_FILE"))"
+
+  if [[ $host != unknown ]] && python3 - "$host" "$BRIDGE_PORT" <<'PY' >/dev/null 2>&1
+import socket, sys
+with socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=.7):
+    pass
+PY
+  then
+    bridge_state=reachable
+  fi
+
+  local response=''
+  if response=$(curl --silent --show-error --fail --max-time 2 \
+      "http://127.0.0.1:$LOCAL_PORT/json/version" 2>/dev/null); then
+    cdp_state=ready
+  fi
+
+  printf 'Local relay : 127.0.0.1:%s (%s)\n' "$LOCAL_PORT" "$local_state"
+  printf 'Windows hop: %s:%s (%s)\n' "$host" "$BRIDGE_PORT" "$bridge_state"
+  printf 'Browser CDP: 127.0.0.1:%s (%s)\n' "$BROWSER_PORT" "$cdp_state"
+  if [[ -n $response ]]; then
+    python3 -c 'import json,sys; d=json.load(sys.stdin); print("Browser     :", d.get("Browser", "unknown")); print("WebSocket   :", d.get("webSocketDebuggerUrl", "missing"))' <<<"$response"
+  else
+    printf 'Log         : %s\n' "$LOG_FILE"
+    return 1
+  fi
+}
+
+print_config() {
+  cat <<EOF
+CDP endpoint: http://127.0.0.1:$LOCAL_PORT
+
+Codex:
+  codex mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:$LOCAL_PORT
+
+Claude Code:
+  claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:$LOCAL_PORT
+
+JSON (for clients that use mcpServers):
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest", "--browser-url=http://127.0.0.1:$LOCAL_PORT"]
+    }
+  }
+}
+EOF
+}
+
+main() {
+  validate_ports
+  case ${1:-help} in
+    up)
+      local host
+      host=$(windows_host_ip)
+      setup_windows_bridge "$host"
+      start_relay "$host"
+      if [[ -n ${2:-} ]]; then
+        launch_browser "$2"
+        wait_for_cdp
+      fi
+      printf 'CDP bridge: http://127.0.0.1:%s\n' "$LOCAL_PORT"
+      ;;
+    browser)
+      launch_browser "${2:-brave}"
+      ;;
+    status) status ;;
+    doctor) doctor ;;
+    config) print_config ;;
+    down)
+      local host
+      host=$(windows_host_ip)
+      stop_relay
+      printf 'Removing the Windows bridge (UAC may appear)...\n'
+      run_windows_helper Teardown -ListenAddress "$host" -BridgePort "$BRIDGE_PORT"
+      printf 'CDP bridge stopped.\n'
+      ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; die "unknown command '$1'." ;;
+  esac
+}
+
+main "$@"
