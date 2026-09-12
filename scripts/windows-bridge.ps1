@@ -101,9 +101,11 @@ function Get-ProfilePath {
         }
         $resolved = [IO.Path]::GetFullPath($UserDataDir).TrimEnd('\', '/')
         $normal = [IO.Path]::GetFullPath($defaultDataRoot).TrimEnd('\', '/')
-        if ($resolved.Equals($normal, [StringComparison]::OrdinalIgnoreCase) -or
-            $resolved.StartsWith($normal + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        if ($resolved.Equals($normal, [StringComparison]::OrdinalIgnoreCase)) {
             throw 'The ordinary browser User Data directory cannot be used for remote debugging. Use a separate agent data directory.'
+        }
+        if ($resolved.StartsWith($normal + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'This path is inside the ordinary browser User Data directory. A profile folder such as Profile 2 is not a user data directory; pointing --user-data-dir here would open a new nested profile, not your existing session. Use a separate agent data directory.'
         }
         if (-not (Test-Path -LiteralPath $resolved -PathType Container)) {
             throw "Custom UserDataDir does not exist: $resolved"

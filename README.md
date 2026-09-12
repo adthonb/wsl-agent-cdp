@@ -55,6 +55,14 @@ folder inside it; Chromium does not honor remote debugging there. A profile
 created in normal Brave must instead be recreated in a separate agent data
 directory.
 
+For example, `%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Profile 2`
+is a **profile directory**, not a user data directory. Passing it as
+`--user-data-dir` would make Brave open a new profile nested beneath it; it
+would not attach to the existing `Profile 2` session. Passing its parent
+`User Data` and `--profile-directory 'Profile 2'` is blocked by Chromium's
+remote-debugging restriction. Start the separate agent profile with
+`./cdp-bridge up brave` and sign in there yourself.
+
 Before each launch, `up brave` and `browser brave` disable password saving and
 browser sign-in in the dedicated profile and remove its saved-password databases.
 Cookie sessions are kept. If the agent window is already open, close it first;
