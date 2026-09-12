@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 RELAY="$ROOT_DIR/scripts/cdp_relay.py"
 WINDOWS_HELPER="$ROOT_DIR/scripts/windows-bridge.ps1"
+PROFILE_HARDENER="$ROOT_DIR/scripts/profile_hardening.py"
 
 BROWSER_PORT=${CDP_BROWSER_PORT:-9222}
 LOCAL_PORT=${CDP_LOCAL_PORT:-9223}
@@ -21,6 +22,8 @@ Commands:
   up [brave|chrome|edge]  Configure the bridge, start the relay, and optionally
                           launch a dedicated Windows browser profile.
   browser [name]          Launch the browser (default: brave) with CDP enabled.
+  harden [name]           Close the agent window first; disable password saving
+                          and browser sign-in, and clear saved passwords.
   status                  Check every hop and print the browser version.
   doctor                  Check dependencies and warn about shared CDP access.
   config                  Print MCP client configuration examples.
@@ -103,6 +106,38 @@ run_windows_helper() {
     -File "$(windows_path)" -Action "$action" "$@" </dev/null
 }
 
+profile_path() {
+  local path
+  path=$(run_windows_helper ProfilePath -Browser "$1")
+  path=${path//$'\r'/}
+  wslpath -u "$path"
+}
+
+check_browser_name() {
+  case $1 in
+    brave|chrome|edge) ;;
+    *) die "unknown browser '$1' (choose brave, chrome, or edge)." ;;
+  esac
+}
+
+harden_profile() {
+  local browser=$1 profile
+  check_browser_name "$browser"
+  run_windows_helper CheckClosed -Browser "$browser"
+  profile=$(profile_path "$browser")
+  python3 "$PROFILE_HARDENER" harden "$profile" ||
+    die "profile hardening failed; browser launch was stopped."
+}
+
+warn_pending_scrub() {
+  local browser=$1 profile
+  profile=$(profile_path "$browser") || return
+  if ! python3 "$PROFILE_HARDENER" status "$profile" >/dev/null 2>&1; then
+    printf 'WARNING: %s agent profile needs password scrub or preference hardening. Close its window, then run ./cdp-bridge harden %s (or up %s).\n' \
+      "$browser" "$browser" "$browser" >&2
+  fi
+}
+
 installed_distros() {
   command -v wsl.exe >/dev/null 2>&1 || return 1
   # Windows 10 releases may emit UTF-16LE here. Decode both that and modern
@@ -170,6 +205,12 @@ doctor() {
   [[ -n $host ]] || failures=$((failures + 1))
 
   security_notice
+  if command -v powershell.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1 &&
+      command -v python3 >/dev/null 2>&1; then
+    for browser in brave chrome edge; do
+      warn_pending_scrub "$browser"
+    done
+  fi
   if ((failures)); then
     printf 'Doctor found %s blocking problem(s).\n' "$failures" >&2
     return 1
@@ -246,13 +287,11 @@ setup_windows_bridge() {
 
 launch_browser() {
   local browser=${1:-brave}
-  case $browser in
-    brave|chrome|edge) ;;
-    *) die "unknown browser '$browser' (choose brave, chrome, or edge)." ;;
-  esac
+  check_browser_name "$browser"
+  harden_profile "$browser"
   security_notice
   run_windows_helper Browser -Browser "$browser" \
-    -BrowserPort "$BROWSER_PORT" -ClientPort "$LOCAL_PORT"
+    -BrowserPort "$BROWSER_PORT" -ClientPort "$LOCAL_PORT" -Hardened
 }
 
 wait_for_cdp() {
@@ -327,17 +366,31 @@ main() {
   case ${1:-help} in
     up)
       local host
+      if [[ -n ${2:-} ]]; then
+        harden_profile "$2"
+      else
+        if command -v powershell.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
+          for browser in brave chrome edge; do
+            warn_pending_scrub "$browser"
+          done
+        fi
+      fi
       host=$(windows_host_ip)
       setup_windows_bridge "$host"
       start_relay "$host"
       if [[ -n ${2:-} ]]; then
-        launch_browser "$2"
+        security_notice
+        run_windows_helper Browser -Browser "$2" \
+          -BrowserPort "$BROWSER_PORT" -ClientPort "$LOCAL_PORT" -Hardened
         wait_for_cdp
       fi
       printf 'CDP bridge: http://127.0.0.1:%s\n' "$LOCAL_PORT"
       ;;
     browser)
       launch_browser "${2:-brave}"
+      ;;
+    harden)
+      harden_profile "${2:-brave}"
       ;;
     status) status ;;
     doctor) doctor ;;

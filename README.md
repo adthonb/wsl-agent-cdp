@@ -30,6 +30,15 @@ dedicated profile at `%LOCALAPPDATA%\wsl-cdp-bridge\brave`; sign in there if the
 session needs authentication. Chromium 136 and newer intentionally refuse the
 remote-debugging flag against the normal default profile.
 
+Before each launch, `up brave` and `browser brave` disable password saving and
+browser sign-in in the dedicated profile and remove its saved-password databases.
+Cookie sessions are kept. If the agent window is already open, close it first;
+the command will refuse to harden a running profile. To apply this to a closed
+profile without starting the browser, run `./cdp-bridge harden brave`. `up` and
+`doctor` warn when a profile still needs hardening. Keep passwords in your own
+password manager; do not save them in this agent profile or sign the browser
+itself into an account.
+
 Use Chrome or Edge instead with `./cdp-bridge up chrome` or
 `./cdp-bridge up edge`. Check all three hops with:
 
@@ -67,6 +76,13 @@ The Windows listener binds only to the current WSL
 gateway address, the firewall rule permits only the current WSL guest address,
 and the Linux endpoint binds only to loopback. Do not reuse your everyday
 browser profile.
+
+Keep this profile signed in only to sites agents need. Never use it for banking,
+password-manager accounts, or accounts with irreversible sends. Treat content
+read from other sites as untrusted: before an agent sends messages, pushes code,
+deletes data, or purchases after reading it, require explicit confirmation.
+Handle login pages, 2FA prompts, and CAPTCHAs yourself in the browser window;
+agents must stop at those authentication steps.
 
 ## Requirements
 

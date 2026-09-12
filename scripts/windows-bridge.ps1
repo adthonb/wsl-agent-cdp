@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Setup', 'Teardown', 'Browser')]
+    [ValidateSet('Setup', 'Teardown', 'Browser', 'ProfilePath', 'CheckClosed')]
     [string]$Action = 'Setup',
     [ValidateSet('brave', 'chrome', 'edge')]
     [string]$Browser = 'brave',
@@ -11,7 +11,8 @@ param(
     [ValidateRange(1, 65535)]
     [int]$BridgePort = 9224,
     [string]$ListenAddress,
-    [string]$WslAddress
+    [string]$WslAddress,
+    [switch]$Hardened
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,6 +83,28 @@ function Find-BrowserPath {
     throw "$Browser was not found in LocalAppData or Program Files."
 }
 
+function Get-ProfilePath {
+    return (Join-Path $StateRoot $Browser)
+}
+
+function Assert-ProfileClosed {
+    $profile = Get-ProfilePath
+    $executableName = switch ($Browser) {
+        'brave'  { 'brave.exe' }
+        'chrome' { 'chrome.exe' }
+        'edge'   { 'msedge.exe' }
+    }
+    $processes = Get-CimInstance Win32_Process -Filter "Name = '$executableName'"
+    foreach ($process in $processes) {
+        if (-not $process.CommandLine) {
+            throw "Cannot verify whether $Browser process $($process.ProcessId) uses the agent profile. Close it first."
+        }
+        if ($process.CommandLine.IndexOf($profile, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            throw "Close the dedicated $Browser agent window first, then run up or harden again: $profile"
+        }
+    }
+}
+
 if ($Action -in @('Setup', 'Teardown') -and -not (Test-Administrator)) {
     Invoke-ElevatedSelf
 }
@@ -121,19 +144,24 @@ switch ($Action) {
         Write-Host 'Windows bridge rules removed.'
     }
     'Browser' {
+        if (-not $Hardened) {
+            throw 'Launch the agent browser through cdp-bridge so its profile is hardened first.'
+        }
+        Assert-ProfileClosed
         $executable = Find-BrowserPath
-        $profileRoot = Join-Path $env:LOCALAPPDATA 'wsl-cdp-bridge'
-        $profile = Join-Path $profileRoot $Browser
+        $profile = Get-ProfilePath
         New-Item -ItemType Directory -Force -Path $profile | Out-Null
         $origins = "http://127.0.0.1:$ClientPort,http://localhost:$ClientPort"
         $arguments = @(
             "--remote-debugging-port=$BrowserPort",
             "--remote-allow-origins=$origins",
-            "--user-data-dir=$profile",
+            "--user-data-dir=`"$profile`"",
             '--no-first-run',
             '--no-default-browser-check'
         )
         Start-Process -FilePath $executable -ArgumentList $arguments
         Write-Host "$Browser started with isolated profile: $profile"
     }
+    'ProfilePath' { Write-Output (Get-ProfilePath) }
+    'CheckClosed' { Assert-ProfileClosed }
 }
