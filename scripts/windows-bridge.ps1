@@ -4,8 +4,6 @@ param(
     [string]$Action = 'Setup',
     [ValidateSet('brave', 'chrome', 'edge')]
     [string]$Browser = 'brave',
-    [string]$ProfileDirectory = 'Default',
-    [string]$UserDataDir,
     [ValidateRange(1, 65535)]
     [int]$BrowserPort = 9222,
     [ValidateRange(1, 65535)]
@@ -86,48 +84,7 @@ function Find-BrowserPath {
 }
 
 function Get-ProfilePath {
-    $defaultDataRoot = switch ($Browser) {
-        'brave'  { Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\User Data' }
-        'chrome' { Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data' }
-        'edge'   { Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data' }
-    }
-    if ($ProfileDirectory -notmatch '^[^\\/:*?"<>|.][^\\/:*?"<>|]*$' -or
-        $ProfileDirectory.EndsWith('.') -or $ProfileDirectory.EndsWith(' ')) {
-        throw 'ProfileDirectory must be one Windows profile folder name, such as Default or Profile 1.'
-    }
-    $profile = if ($UserDataDir) {
-        if ($UserDataDir -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)') {
-            throw 'UserDataDir must be an absolute Windows path.'
-        }
-        $resolved = [IO.Path]::GetFullPath($UserDataDir).TrimEnd('\', '/')
-        $normal = [IO.Path]::GetFullPath($defaultDataRoot).TrimEnd('\', '/')
-        if ($resolved.Equals($normal, [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'The ordinary browser User Data directory cannot be used for remote debugging. Use a separate agent data directory.'
-        }
-        if ($resolved.StartsWith($normal + '\', [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'This path is inside the ordinary browser User Data directory. A profile folder such as Profile 2 is not a user data directory; pointing --user-data-dir here would open a new nested profile, not your existing session. Use a separate agent data directory.'
-        }
-        if (-not (Test-Path -LiteralPath $resolved -PathType Container)) {
-            throw "Custom UserDataDir does not exist: $resolved"
-        }
-        $resolved
-    } else {
-        Join-Path $StateRoot $Browser
-    }
-    if ((Test-Path -LiteralPath $profile) -and
-        ((Get-Item -LiteralPath $profile).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "Refusing a linked browser data directory: $profile"
-    }
-    $selectedProfile = Join-Path $profile $ProfileDirectory
-    if ((Test-Path -LiteralPath $selectedProfile) -and
-        ((Get-Item -LiteralPath $selectedProfile).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "Refusing a linked browser profile: $selectedProfile"
-    }
-    if ($ProfileDirectory -ne 'Default' -and
-        -not (Test-Path -LiteralPath $selectedProfile -PathType Container)) {
-        throw "Profile directory does not exist: $selectedProfile"
-    }
-    return $profile
+    return (Join-Path $StateRoot $Browser)
 }
 
 function Assert-ProfileClosed {
@@ -199,7 +156,6 @@ switch ($Action) {
             "--remote-debugging-port=$BrowserPort",
             "--remote-allow-origins=$origins",
             "--user-data-dir=`"$profile`"",
-            "--profile-directory=`"$ProfileDirectory`"",
             '--no-first-run',
             '--no-default-browser-check'
         )
