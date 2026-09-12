@@ -47,6 +47,48 @@ Use Chrome or Edge instead with `./cdp-bridge up chrome` or
 curl http://127.0.0.1:9223/json/version
 ```
 
+## Brave DevTools MCP from WSL
+
+Install Node.js LTS and npm **inside WSL**, then start the dedicated Windows
+Brave profile and check the bridge:
+
+```bash
+./cdp-bridge up brave
+./cdp-bridge status
+```
+
+If that dedicated Brave window is already running and was hardened at launch,
+use `./cdp-bridge up` without `brave` to reconnect the bridge. If `doctor`
+reports pending hardening, close that window first and run `up brave`.
+
+Register [Brave DevTools MCP](https://github.com/triuzzi/brave-devtools-mcp)
+in the agent client running **inside WSL**. For Codex or Claude Code:
+
+```bash
+codex mcp add brave-devtools -- npx -y brave-mcp@latest --browser-url=http://127.0.0.1:9223
+claude mcp add brave-devtools -- npx -y brave-mcp@latest --browser-url=http://127.0.0.1:9223
+```
+
+For a client using `mcpServers` JSON:
+
+```json
+{
+  "mcpServers": {
+    "brave-devtools": {
+      "command": "npx",
+      "args": ["-y", "brave-mcp@latest", "--browser-url=http://127.0.0.1:9223"]
+    }
+  }
+}
+```
+
+Restart the agent client, then ask it to list the browser's open pages or
+network requests. `--browser-url` attaches to the existing Windows Brave
+process; it does not start another browser. Use the **WSL relay port** (9223),
+not Brave's Windows debugging port (9222). If you override `CDP_LOCAL_PORT`,
+use that same port in the MCP configuration. Run `./cdp-bridge config` to print
+examples with the current port.
+
 Run `./cdp-bridge up` after a WSL or Windows restart. It re-discovers the
 changing WSL gateway, refreshes the Windows rule, and replaces a stale relay.
 Stop and remove the narrowly scoped firewall/portproxy rules with:
@@ -89,6 +131,7 @@ agents must stop at those authentication steps.
 - Windows 10 with WSL2's default NAT networking
 - Windows PowerShell 5.1 (included with Windows 10)
 - Python 3 and curl inside WSL
+- Node.js LTS and npm inside WSL when using Brave DevTools MCP
 - Brave, Chrome, or Edge installed on Windows
 
 No `socat` installation is needed.
