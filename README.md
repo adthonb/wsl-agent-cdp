@@ -30,6 +30,31 @@ dedicated profile at `%LOCALAPPDATA%\wsl-cdp-bridge\brave`; sign in there if the
 session needs authentication. Chromium 136 and newer intentionally refuse the
 remote-debugging flag against the normal default profile.
 
+If you created another Brave profile **inside that dedicated data directory**,
+select its folder name (visible under `brave://version` as the final part of
+`Profile Path`):
+
+```bash
+./cdp-bridge up brave --profile-directory "Profile 1"
+```
+
+If you created a separate Brave **user data directory** elsewhere on Windows,
+pass its absolute Windows path. It must already exist and be dedicated to agent
+use; this command hardens every profile inside it before launching the selected
+one:
+
+```bash
+./cdp-bridge up brave --user-data-dir 'C:\agent-brave-data' --profile-directory 'Default'
+```
+
+Use the same options with `browser`, `harden`, or `doctor` (to check pending
+hardening). Close any window using that data directory first. Do not point
+`--user-data-dir` at Brave's ordinary
+`%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data` directory or a profile
+folder inside it; Chromium does not honor remote debugging there. A profile
+created in normal Brave must instead be recreated in a separate agent data
+directory.
+
 Before each launch, `up brave` and `browser brave` disable password saving and
 browser sign-in in the dedicated profile and remove its saved-password databases.
 Cookie sessions are kept. If the agent window is already open, close it first;
