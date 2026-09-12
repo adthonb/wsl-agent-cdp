@@ -16,7 +16,7 @@ LOG_FILE=$STATE_DIR/relay.log
 
 usage() {
   cat <<'EOF'
-Usage: ./cdp-bridge <command> [browser]
+Usage: ./cdp-bridge <command> [browser] [profile options]
 
 Commands:
   up [brave|chrome|edge]  Configure the bridge, start the relay, and optionally
@@ -25,10 +25,16 @@ Commands:
   harden [name]           Close the agent window first; disable password saving
                           and browser sign-in, and clear saved passwords.
   status                  Check every hop and print the browser version.
-  doctor                  Check dependencies and warn about shared CDP access.
+  doctor [browser]         Check dependencies and warn about shared CDP access.
   config                  Print MCP client configuration examples.
   down                    Stop the relay and remove this tool's Windows rules.
   help                    Show this help.
+
+Profile options for up, browser, harden, and doctor:
+  --profile-directory NAME  Select a profile inside the browser data directory
+                            (for example, "Profile 1"; default: Default).
+  --user-data-dir PATH      Use an existing, dedicated Windows browser data
+                            directory instead of this bridge's default.
 
 Environment overrides: CDP_BROWSER_PORT, CDP_LOCAL_PORT, CDP_BRIDGE_PORT.
 EOF
@@ -106,9 +112,50 @@ run_windows_helper() {
     -File "$(windows_path)" -Action "$action" "$@" </dev/null
 }
 
+PROFILE_DIRECTORY=Default
+USER_DATA_DIR=''
+BROWSER=brave
+
+parse_browser_args() {
+  BROWSER=brave
+  PROFILE_DIRECTORY=Default
+  USER_DATA_DIR=''
+  local browser_seen=0
+  while (($#)); do
+    case $1 in
+      brave|chrome|edge)
+        ((browser_seen == 0)) || die "browser was specified more than once."
+        BROWSER=$1
+        browser_seen=1
+        shift
+        ;;
+      --profile-directory|--user-data-dir)
+        (($# >= 2)) && [[ -n $2 ]] || die "$1 needs a value."
+        if [[ $1 == --profile-directory ]]; then
+          PROFILE_DIRECTORY=$2
+        else
+          USER_DATA_DIR=$2
+        fi
+        shift 2
+        ;;
+      *) die "unknown browser/profile option '$1'." ;;
+    esac
+  done
+  [[ $PROFILE_DIRECTORY != *[\\/]* && $PROFILE_DIRECTORY != . && $PROFILE_DIRECTORY != .. ]] ||
+    die "--profile-directory must be a single profile folder name."
+}
+
+profile_helper_args() {
+  PROFILE_ARGS=(-Browser "$BROWSER" -ProfileDirectory "$PROFILE_DIRECTORY")
+  if [[ -n $USER_DATA_DIR ]]; then
+    PROFILE_ARGS+=(-UserDataDir "$USER_DATA_DIR")
+  fi
+}
+
 profile_path() {
   local path
-  path=$(run_windows_helper ProfilePath -Browser "$1")
+  profile_helper_args
+  path=$(run_windows_helper ProfilePath "${PROFILE_ARGS[@]}")
   path=${path//$'\r'/}
   wslpath -u "$path"
 }
@@ -121,20 +168,21 @@ check_browser_name() {
 }
 
 harden_profile() {
-  local browser=$1 profile
-  check_browser_name "$browser"
-  run_windows_helper CheckClosed -Browser "$browser"
-  profile=$(profile_path "$browser")
+  local profile
+  check_browser_name "$BROWSER"
+  profile_helper_args
+  run_windows_helper CheckClosed "${PROFILE_ARGS[@]}"
+  profile=$(profile_path)
   python3 "$PROFILE_HARDENER" harden "$profile" ||
     die "profile hardening failed; browser launch was stopped."
 }
 
 warn_pending_scrub() {
-  local browser=$1 profile
-  profile=$(profile_path "$browser") || return
+  local profile
+  profile=$(profile_path) || return
   if ! python3 "$PROFILE_HARDENER" status "$profile" >/dev/null 2>&1; then
-    printf 'WARNING: %s agent profile needs password scrub or preference hardening. Close its window, then run ./cdp-bridge harden %s (or up %s).\n' \
-      "$browser" "$browser" "$browser" >&2
+    printf 'WARNING: %s agent profile needs password scrub or preference hardening. Close its window, then run harden or up with the same profile options.\n' \
+      "$BROWSER" >&2
   fi
 }
 
@@ -207,9 +255,16 @@ doctor() {
   security_notice
   if command -v powershell.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1 &&
       command -v python3 >/dev/null 2>&1; then
-    for browser in brave chrome edge; do
-      warn_pending_scrub "$browser"
-    done
+    if [[ ${DOCTOR_PROFILE_SELECTED:-0} == 1 ]]; then
+      warn_pending_scrub
+    else
+      for browser in brave chrome edge; do
+        BROWSER=$browser
+        PROFILE_DIRECTORY=Default
+        USER_DATA_DIR=''
+        warn_pending_scrub
+      done
+    fi
   fi
   if ((failures)); then
     printf 'Doctor found %s blocking problem(s).\n' "$failures" >&2
@@ -286,11 +341,11 @@ setup_windows_bridge() {
 }
 
 launch_browser() {
-  local browser=${1:-brave}
-  check_browser_name "$browser"
-  harden_profile "$browser"
+  check_browser_name "$BROWSER"
+  harden_profile
   security_notice
-  run_windows_helper Browser -Browser "$browser" \
+  profile_helper_args
+  run_windows_helper Browser "${PROFILE_ARGS[@]}" \
     -BrowserPort "$BROWSER_PORT" -ClientPort "$LOCAL_PORT" -Hardened
 }
 
@@ -381,34 +436,47 @@ main() {
   case ${1:-help} in
     up)
       local host
-      if [[ -n ${2:-} ]]; then
-        harden_profile "$2"
+      if (($# > 1)); then
+        parse_browser_args "${@:2}"
+        harden_profile
       else
         if command -v powershell.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
           for browser in brave chrome edge; do
-            warn_pending_scrub "$browser"
+            BROWSER=$browser
+            PROFILE_DIRECTORY=Default
+            USER_DATA_DIR=''
+            warn_pending_scrub
           done
         fi
       fi
       host=$(windows_host_ip)
       setup_windows_bridge "$host"
       start_relay "$host"
-      if [[ -n ${2:-} ]]; then
+      if (($# > 1)); then
         security_notice
-        run_windows_helper Browser -Browser "$2" \
+        profile_helper_args
+        run_windows_helper Browser "${PROFILE_ARGS[@]}" \
           -BrowserPort "$BROWSER_PORT" -ClientPort "$LOCAL_PORT" -Hardened
         wait_for_cdp
       fi
       printf 'CDP bridge: http://127.0.0.1:%s\n' "$LOCAL_PORT"
       ;;
     browser)
-      launch_browser "${2:-brave}"
+      parse_browser_args "${@:2}"
+      launch_browser
       ;;
     harden)
-      harden_profile "${2:-brave}"
+      parse_browser_args "${@:2}"
+      harden_profile
       ;;
     status) status ;;
-    doctor) doctor ;;
+    doctor)
+      if (($# > 1)); then
+        parse_browser_args "${@:2}"
+        DOCTOR_PROFILE_SELECTED=1
+      fi
+      doctor
+      ;;
     config) print_config ;;
     down)
       local host
