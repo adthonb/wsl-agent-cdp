@@ -22,9 +22,6 @@ chmod +x cdp-bridge
 ./cdp-bridge config
 ```
 
-The Python project entry points are aliases for the same CLI, so
-`uv run wsl-agent-cdp up brave` and `uv run cdp-bridge up brave` also work.
-
 Accept the Windows UAC prompt on `up`. The first browser launch uses a new,
 dedicated profile at `%LOCALAPPDATA%\wsl-cdp-bridge\brave`; sign in there if the
 session needs authentication. Chromium 136 and newer intentionally refuse the
@@ -82,12 +79,15 @@ For a client using `mcpServers` JSON:
 }
 ```
 
+For Chrome DevTools MCP, replace `brave-devtools` with `chrome-devtools` and
+`brave-mcp@latest` with `chrome-devtools-mcp@latest` in that JSON.
+
 Restart the agent client, then ask it to list the browser's open pages or
 network requests. `--browser-url` attaches to the existing Windows Brave
 process; it does not start another browser. Use the **WSL relay port** (9223),
 not Brave's Windows debugging port (9222). If you override `CDP_LOCAL_PORT`,
 use that same port in the MCP configuration. Run `./cdp-bridge config` to print
-examples with the current port.
+commands with the current port.
 
 Run `./cdp-bridge up` after a WSL or Windows restart. It re-discovers the
 changing WSL gateway, refreshes the Windows rule, and replaces a stale relay.

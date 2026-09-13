@@ -343,36 +343,15 @@ print_config() {
   cat <<EOF
 CDP endpoint: http://127.0.0.1:$LOCAL_PORT
 
-Brave DevTools MCP (for Brave):
+Brave DevTools MCP (Brave):
   codex mcp add brave-devtools -- npx -y brave-mcp@latest --browser-url=http://127.0.0.1:$LOCAL_PORT
   claude mcp add brave-devtools -- npx -y brave-mcp@latest --browser-url=http://127.0.0.1:$LOCAL_PORT
 
-Brave DevTools MCP JSON:
-{
-  "mcpServers": {
-    "brave-devtools": {
-      "command": "npx",
-      "args": ["-y", "brave-mcp@latest", "--browser-url=http://127.0.0.1:$LOCAL_PORT"]
-    }
-  }
-}
-
-Chrome DevTools MCP (for Chrome, Edge, or Brave):
-Codex:
+Chrome DevTools MCP (Chrome, Edge, or Brave):
   codex mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:$LOCAL_PORT
-
-Claude Code:
   claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:$LOCAL_PORT
 
-JSON (for clients that use mcpServers):
-{
-  "mcpServers": {
-    "chrome-devtools": {
-      "command": "npx",
-      "args": ["-y", "chrome-devtools-mcp@latest", "--browser-url=http://127.0.0.1:$LOCAL_PORT"]
-    }
-  }
-}
+For mcpServers JSON, see README.md and use this endpoint as browser-url.
 EOF
 }
 
