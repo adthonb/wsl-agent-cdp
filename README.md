@@ -130,7 +130,7 @@ agents must stop at those authentication steps.
 
 - Windows 10 with WSL2's default NAT networking
 - Windows PowerShell 5.1 (included with Windows 10)
-- Python 3 and curl inside WSL
+- Python 3.14+ and curl inside WSL (declared in `pyproject.toml`; `.python-version` selects 3.14)
 - Node.js LTS and npm inside WSL when using Brave DevTools MCP
 - Brave, Chrome, or Edge installed on Windows
 
