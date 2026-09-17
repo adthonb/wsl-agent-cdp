@@ -144,6 +144,10 @@ No `socat` installation is needed.
 - If a custom firewall policy blocks the generated rule, inspect it in an
   elevated PowerShell window with
   `Get-NetFirewallRule -DisplayName 'WSL CDP Bridge 9224'`.
+- The agent browser disables background mode so closing its last window releases
+  the profile. Leftover crash handlers do not block a fresh launch. If the agent
+  browser is still open, use `./cdp-bridge up` to reconnect; close its windows
+  before running `./cdp-bridge up brave` to harden and relaunch it.
 - Browser flags only affect a newly created browser process for that profile.
   Close that dedicated profile and rerun the browser command if needed.
 

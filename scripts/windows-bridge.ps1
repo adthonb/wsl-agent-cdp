@@ -99,6 +99,14 @@ function Assert-ProfileClosed {
         if (-not $process.CommandLine) {
             throw "Cannot verify whether $Browser process $($process.ProcessId) uses the agent profile. Close it first."
         }
+        # Crashpad can outlive the browser window and keeps --user-data-dir in
+        # its command line. It does not own the profile or write Preferences /
+        # Login Data, so it must not prevent hardening and a fresh launch.
+        # Other children remain blocking: they may still be shutting down and
+        # writing profile data. Unknown command lines remain fail-closed above.
+        if ($process.CommandLine -match '(?:^|\s)--type=crashpad-handler(?:\s|$)') {
+            continue
+        }
         if ($process.CommandLine.IndexOf($profile, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
             throw "Close the dedicated $Browser agent window first, then run up or harden again: $profile"
         }
@@ -156,6 +164,7 @@ switch ($Action) {
             "--remote-debugging-port=$BrowserPort",
             "--remote-allow-origins=$origins",
             "--user-data-dir=`"$profile`"",
+            '--disable-background-mode',
             '--no-first-run',
             '--no-default-browser-check'
         )
