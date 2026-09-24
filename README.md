@@ -1,5 +1,12 @@
 # WSL CDP bridge
 
+[![Python 3.14+](https://img.shields.io/badge/Python-3.14+-3776AB.svg?logo=python&logoColor=white)](pyproject.toml)
+[![WSL2](https://img.shields.io/badge/WSL-2-FCC624.svg?logo=linux&logoColor=black)](https://learn.microsoft.com/windows/wsl/)
+[![Windows 10+](https://img.shields.io/badge/Windows-10+-0078D6.svg?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
+[![Brave](https://img.shields.io/badge/Brave-Supported-FB542B.svg?logo=brave&logoColor=white)](https://brave.com/)
+[![Chrome](https://img.shields.io/badge/Chrome-Supported-4285F4.svg?logo=googlechrome&logoColor=white)](https://www.google.com/chrome/)
+[![Edge](https://img.shields.io/badge/Edge-Supported-0078D7.svg?logo=microsoftedge&logoColor=white)](https://www.microsoft.com/edge)
+
 Connect an MCP server running in WSL2 NAT mode to Chrome, Edge, or Brave running
 on Windows:
 
